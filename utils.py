@@ -7,7 +7,7 @@ import sys
 import unicodedata
 
 from constants import (RESET, BOLD, DIM, RED, YELLOW, MEALS, SCHOOLS, WEEKDAYS_CN, WEEKDAYS_EN, ALLERGENS)
-from api import ApiError, list_weeks, find_week
+from api import ApiError, list_weeks, find_week, probe_week
 
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 MEAL_ICONS = {"breakfast": "🍳", "morning": "🍪", "lunch": "🍱", "muslim": "🥘",
@@ -68,7 +68,7 @@ def resolve_date(args):
 
 def week_for(date):
     try:
-        week = find_week(date)
+        week = find_week(date) or probe_week(date)
     except ApiError as e:
         die(str(e))
     if not week:

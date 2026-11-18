@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -94,6 +95,65 @@ def find_week(date, weeks=None):
     for w in weeks:
         if w["start"] <= date <= w["end"]:
             return w
+    return None
+
+
+TITLE_DATE_RE = re.compile(r"(\d{4})\.(\d{1,2})\.(\d{1,2})\s*-\s*(\d{4})\.(\d{1,2})\.(\d{1,2})")
+
+# 周列表接口可能落后于菜单本身（新的那一周已上传菜品，但还没进周列表），
+# 这时按 id 往后试探，用 canteen_item_list 的 title_date 反推日期区间。
+# 开销 = 实际存在但未列入的周数（找到/越过目标即停），与列表停更多久无关；
+# 历史 id 有跳号（如 3 → 5），所以允许连续漏几个再放弃。
+WEEK_PROBE_LIMIT = int(os.environ.get("DLMENU_WEEK_PROBE", "26"))
+WEEK_PROBE_MISSES = 2
+
+
+def parse_title_date(text):
+    """'2026.11.16-2026.11.22' -> (date(2026, 11, 16), date(2026, 11, 22))"""
+    m = TITLE_DATE_RE.search(text or "")
+    if not m:
+        return None
+    try:
+        start = datetime.date(*map(int, m.groups()[:3]))
+        end = datetime.date(*map(int, m.groups()[3:]))
+    except ValueError:
+        return None
+    return (start, end) if start <= end else None
+
+
+def probe_week(date, weeks=None, limit=None):
+    """周列表里查不到时，按 id 试探后面的周（是否真的存在以接口返回为准）。
+
+    正常情况只发 1 次请求；请求次数只跟“存在但没列出来的周数”有关，
+    跟周列表停更多久无关，最多 limit 次。
+    """
+    limit = WEEK_PROBE_LIMIT if limit is None else limit
+    weeks = weeks if weeks is not None else list_weeks()
+    if not weeks or limit <= 0 or date <= weeks[0]["end"]:
+        return None
+    last_id = max(w["id"] for w in weeks)
+    misses = 0
+    for step in range(1, limit + 1):
+        week_id = last_id + step
+        try:
+            data = _get("api/info/canteen_item_list",
+                        {"page": 1, "page_size": 1, "week_id": week_id,
+                         "week": WEEKDAYS_CN[0], "remark": "中学"})
+        except ApiError:
+            misses += 1
+            if misses >= WEEK_PROBE_MISSES:
+                return None  # id 已经用尽，后面的周不会存在
+            continue
+        misses = 0
+        rng = parse_title_date(data.get("title_date"))
+        if not rng:
+            continue
+        start, end = rng
+        if start > date:
+            return None  # 已经越过目标周，说明那一周确实没发布
+        if start <= date <= end:
+            return {"id": week_id, "school": weeks[0].get("school", ""),
+                    "title": data.get("title_date", ""), "start": start, "end": end}
     return None
 
 
